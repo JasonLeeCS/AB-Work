@@ -107,6 +107,27 @@ body {
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   gap: 1.5rem;
   align-items: end;
+  position: relative;
+}
+
+.filters.is-loading::after {
+  content: "Refreshing…";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(6, 8, 15, 0.82);
+  border-radius: var(--radius-lg);
+  color: var(--accent);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+}
+
+.filters.is-loading button,
+.filters.is-loading select,
+.filters.is-loading input {
+  pointer-events: none;
+  opacity: 0.4;
 }
 
 .field label {
@@ -178,6 +199,12 @@ button.ghost {
 button.ghost:hover {
   background: var(--accent-soft);
   transform: translateY(-1px);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+  box-shadow: none;
 }
 
 .grid {

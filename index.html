@@ -149,12 +149,17 @@
 
       <footer class="glass-panel footer">
         <p>
-          Data shown represents a curated demo dataset inspired by the VBA
-          scheduler queries. Replace the in-browser dataset with live warehouse
-          data through your preferred API gateway when ready.
+          Provide an API endpoint in <code>window.schedulerConfig.apiBaseUrl</code>
+          to stream live warehouse data. Without a configured endpoint the
+          interface falls back to a static demo dataset for illustration.
         </p>
       </footer>
     </main>
+    <script>
+      window.schedulerConfig = window.schedulerConfig || {
+        // apiBaseUrl: "https://your-gateway.example.com", // <- set this to enable live data
+      };
+    </script>
     <script src="script.js"></script>
   </body>
 </html>
