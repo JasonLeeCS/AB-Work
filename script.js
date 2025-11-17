@@ -1,3 +1,21 @@
+/**
+ * WMS Scheduler - HTML/JS Implementation
+ * 
+ * This is a dark mode glass morphism HTML version of the Excel VBA scheduler.
+ * It replicates the functionality of:
+ * - getBricksConnection(): Maps brewery codes to Databricks catalog/schema
+ * - GetSchedule(): Queries schedule data based on load type and product type filters
+ * 
+ * VBA Module Mapping:
+ * - getBricksConnection() -> BREWERY_CATALOG_MAP + buildQueryParams()
+ * - GetSchedule() -> buildQueryParams() + loadData() + applyFilters()
+ * 
+ * Query Logic:
+ * - Load types determine WHERE clause addendums and date field selection
+ * - Product types filter by draft percentage (DRAUGHT > 0, PKG ONLY = 0)
+ * - Two queries: weekly (futures) and drags (past 2 days, not checked in)
+ */
+
 const BREWERIES = [
   "BALDWINSVILLE",
   "COLUMBUS",
@@ -12,6 +30,22 @@ const BREWERIES = [
   "SAINT LOUIS",
   "WILLIAMSBURG",
 ];
+
+// Brewery to catalog/schema mapping (matching VBA getBricksConnection logic)
+const BREWERY_CATALOG_MAP = {
+  "BALDWINSVILLE": { catalog: "oracle", schema: "bbap_wms" },
+  "COLUMBUS": { catalog: "oracle", schema: "bcop_wms" },
+  "CARTERSVILLE": { catalog: "oracle", schema: "bcvp_wms" },
+  "FAIRFIELD": { catalog: "oracle", schema: "bfap_wms" },
+  "FORT COLLINS": { catalog: "oracle", schema: "bfcp_wms" },
+  "HOUSTON": { catalog: "oracle", schema: "bhop_wms" },
+  "JACKSONVILLE": { catalog: "oracle", schema: "bjap_wms" },
+  "LOS ANGELES": { catalog: "oracle", schema: "blap_wms" },
+  "MERRIMACK": { catalog: "oracle", schema: "bmep_wms" },
+  "NEWARK": { catalog: "oracle", schema: "bnep_wms" },
+  "SAINT LOUIS": { catalog: "oracle", schema: "bslp_wms" },
+  "WILLIAMSBURG": { catalog: "oracle", schema: "bwmp_wms" },
+};
 
 const DEFAULT_API_BASE_URL =
   (window.schedulerConfig && window.schedulerConfig.apiBaseUrl) || "";
@@ -356,16 +390,116 @@ function exportTable(type) {
   URL.revokeObjectURL(url);
 }
 
+/**
+ * Builds query parameters matching VBA GetSchedule logic
+ * 
+ * This function replicates the VBA Select Case logic for load types:
+ * - Maps brewery to catalog/schema (matching getBricksConnection)
+ * - Builds whereBlockAddendum based on load type selection
+ * - Determines date field type (PULL_TIME/PULL_DATE vs SCHD_HR/SCHD_DATE)
+ * - Applies product type filters (DRAUGHT vs PKG ONLY)
+ * 
+ * The resulting parameters can be sent to a backend API that executes
+ * the equivalent SQL queries against Databricks Unity Catalog.
+ */
+function buildQueryParams(filters) {
+  const brewery = filters.brewery.toUpperCase().trim();
+  const loadType = filters.loadType;
+  const productType = filters.productType;
+  
+  // Get catalog/schema mapping
+  const catalogInfo = BREWERY_CATALOG_MAP[brewery];
+  if (!catalogInfo) {
+    throw new Error(`Invalid brewery: ${brewery}`);
+  }
+
+  // Build where clause addendum based on load type (matching VBA Select Case)
+  let whereBlockAddendum = "";
+  let dateFieldType = "PULL"; // PULL_TIME/PULL_DATE or SCHD_HR/SCHD_DATE
+  
+  switch (loadType) {
+    case "ALL OUTBOUND":
+      whereBlockAddendum = "";
+      dateFieldType = "PULL";
+      break;
+    case "LIVE":
+      whereBlockAddendum = "AND (vs.spotting_serv_id = 'LIVE' OR vs.spotting_serv_id IS NULL) AND bc.carr_seq_id IS NOT NULL AND carr.scac_cd <> 'HOLD'";
+      dateFieldType = "PULL";
+      break;
+    case "DEDICATED":
+      whereBlockAddendum = "AND bc.ded_flg = 1 AND vs.spotting_serv_id IS NOT NULL AND vs.spotting_serv_id <> 'LIVE'";
+      dateFieldType = "PULL";
+      break;
+    case "ASSET-OTR":
+      whereBlockAddendum = "AND vs.spotting_serv_id IS NOT NULL AND vs.spotting_serv_id <> 'LIVE' AND (bc.ded_flg = 0 OR bc.ded_flg IS NULL) AND bc.carr_seq_id IS NOT NULL AND carr.scac_cd <> 'HOLD'";
+      dateFieldType = "PULL";
+      break;
+    case "UNCOVERED":
+      whereBlockAddendum = "AND (bc.carr_seq_id IS NULL OR carr.scac_cd = 'HOLD')";
+      dateFieldType = "PULL";
+      break;
+    case "ALL INBOUND":
+      whereBlockAddendum = "AND vs.check_in_tsp IS NULL AND vs.inbnd_shpmt_stat_cd = 20";
+      dateFieldType = "SCHD";
+      break;
+    case "RAIL":
+      whereBlockAddendum = "AND vs.rail_rte_id IS NOT NULL";
+      dateFieldType = "PULL";
+      break;
+    case "INBOUND TR":
+      whereBlockAddendum = "AND vs.check_in_tsp IS NULL AND vs.inbnd_shpmt_stat_cd = 20 AND vs.inbnd_shpmt_typ_cd BETWEEN 2 AND 3";
+      dateFieldType = "SCHD";
+      break;
+    case "INBOUND MTRL":
+      whereBlockAddendum = "AND vs.check_in_tsp IS NULL AND vs.inbnd_shpmt_stat_cd = 20 AND vs.inbnd_shpmt_typ_cd = 1";
+      dateFieldType = "SCHD";
+      break;
+    case "INBOUND BEER":
+      whereBlockAddendum = "AND vs.check_in_tsp IS NULL AND vs.inbnd_shpmt_stat_cd = 20 AND (vs.inbnd_shpmt_typ_cd = 0 OR vs.inbnd_shpmt_typ_cd = 3 OR vs.inbnd_shpmt_typ_cd = 5)";
+      dateFieldType = "SCHD";
+      break;
+    default:
+      throw new Error(`Invalid load type: ${loadType}`);
+  }
+
+  // Build draft where addendum based on product type
+  let draftWhereAddendum = "";
+  if (productType === "DRAUGHT") {
+    draftWhereAddendum = "AND vs.dft_pct_qty > 0";
+  } else if (productType === "PKG ONLY") {
+    draftWhereAddendum = "AND vs.dft_pct_qty = 0";
+  }
+
+  return {
+    brewery,
+    catalog: catalogInfo.catalog,
+    schema: catalogInfo.schema,
+    loadType,
+    productType,
+    whereBlockAddendum,
+    draftWhereAddendum,
+    dateFieldType,
+    futureDays: filters.futureDays,
+  };
+}
+
 async function loadData(filters) {
   if (!DEFAULT_API_BASE_URL) {
     return demoData;
   }
 
+  const queryParams = buildQueryParams(filters);
+  
   const params = new URLSearchParams({
-    brewery: filters.brewery,
-    loadType: filters.loadType,
-    productType: filters.productType,
-    futureDays: String(filters.futureDays),
+    brewery: queryParams.brewery,
+    catalog: queryParams.catalog,
+    schema: queryParams.schema,
+    loadType: queryParams.loadType,
+    productType: queryParams.productType,
+    whereBlockAddendum: queryParams.whereBlockAddendum,
+    draftWhereAddendum: queryParams.draftWhereAddendum,
+    dateFieldType: queryParams.dateFieldType,
+    futureDays: String(queryParams.futureDays),
   });
 
   const response = await fetch(`${DEFAULT_API_BASE_URL.replace(/\/$/, "")}/schedule?${params.toString()}`, {
@@ -385,6 +519,7 @@ async function loadData(filters) {
 }
 
 function normalizeRecord(record) {
+  // Handle VBA query result format: SCAC, ShipNum, PULL_TIME/PULL_DATE or SCHD_HR/SCHD_DATE
   const datetimeCandidate = record.datetime
     ? new Date(record.datetime)
     : deriveDate(record);
@@ -394,14 +529,20 @@ function normalizeRecord(record) {
 
   return {
     brewery: record.brewery || record.breweryCode || record.brwy || "",
-    scac: record.scac || record.carr_scac || "—",
+    scac: record.SCAC || record.scac || record.carr_scac || "—",
     shipNum:
+      record.ShipNum ||
       record.shipNum ||
       record.shipment ||
       record.pri_xref_shpmt_id ||
       record.shipmentId ||
       record.shipment_id ||
       "—",
+    // VBA returns PULL_TIME/PULL_DATE or SCHD_HR/SCHD_DATE
+    pullTime: record.PULL_TIME || record.pullTime || null,
+    pullDate: record.PULL_DATE || record.pullDate || null,
+    schdHr: record.SCHD_HR || record.schdHr || null,
+    schdDate: record.SCHD_DATE || record.schdDate || null,
     loadTags: Array.isArray(record.loadTags)
       ? record.loadTags
       : filterTruthy([
@@ -421,6 +562,40 @@ function normalizeRecord(record) {
 }
 
 function deriveDate(record) {
+  // Try VBA query result format first (PULL_DATE + PULL_TIME or SCHD_DATE + SCHD_HR)
+  if (record.pullDate && record.pullTime) {
+    const combined = `${record.pullDate} ${record.pullTime}`;
+    const parsed = new Date(combined);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+
+  if (record.PULL_DATE && record.PULL_TIME) {
+    const combined = `${record.PULL_DATE} ${record.PULL_TIME}`;
+    const parsed = new Date(combined);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+
+  if (record.schdDate && record.schdHr) {
+    const combined = `${record.schdDate} ${record.schdHr}`;
+    const parsed = new Date(combined);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+
+  if (record.SCHD_DATE && record.SCHD_HR) {
+    const combined = `${record.SCHD_DATE} ${record.SCHD_HR}`;
+    const parsed = new Date(combined);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+
+  // Fallback to timestamp fields
   if (record.pullTimestamp) {
     return new Date(record.pullTimestamp);
   }

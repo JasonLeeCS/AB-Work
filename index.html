@@ -150,8 +150,11 @@
       <footer class="glass-panel footer">
         <p>
           Provide an API endpoint in <code>window.schedulerConfig.apiBaseUrl</code>
-          to stream live warehouse data. Without a configured endpoint the
-          interface falls back to a static demo dataset for illustration.
+          to stream live warehouse data. The API should accept query parameters
+          matching the VBA GetSchedule logic (brewery, catalog, schema, loadType,
+          productType, whereBlockAddendum, draftWhereAddendum, dateFieldType, futureDays)
+          and return JSON with <code>weekly</code> and <code>drags</code> arrays.
+          Without a configured endpoint the interface falls back to a static demo dataset.
         </p>
       </footer>
     </main>
