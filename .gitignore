@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+
+# Configuration with sensitive data
+config.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment variables
+.env
+.env.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
