@@ -149,13 +149,13 @@ async function executeDatabricksQuery(sql) {
     );
 
     let result = submitResponse.data;
-    const statementId = result.statement_id;
     
     // If the query is still running, poll for results
     if (result.status?.state === 'PENDING' || result.status?.state === 'RUNNING') {
+      const statementId = result.statement_id;
       const maxAttempts = 10;
       let attempts = 0;
-
+      
       while (attempts < maxAttempts && (result.status?.state === 'PENDING' || result.status?.state === 'RUNNING')) {
         await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
         const pollResponse = await axios.get(
@@ -170,32 +170,7 @@ async function executeDatabricksQuery(sql) {
         attempts++;
       }
     }
-
-    // If the statement completed but the result payload is missing, fetch it explicitly
-    const hasResultPayload = Boolean(
-      result?.result?.data_array ||
-      result?.result?.chunks ||
-      result?.data_array ||
-      result?.chunks
-    );
-
-    if (result.status?.state === 'SUCCEEDED' && !hasResultPayload && statementId) {
-      const finalResponse = await axios.get(
-        `${DATABRICKS_CONFIG.apiUrl}/${statementId}/result`,
-        {
-          headers: {
-            'Authorization': `Bearer ${DATABRICKS_CONFIG.token}`,
-          },
-        }
-      );
-
-      // Preserve the original status but attach the result body so downstream logic can transform rows
-      result = {
-        ...result,
-        result: finalResponse.data?.result || finalResponse.data,
-      };
-    }
-
+    
     return result;
   } catch (error) {
     if (error.response) {
