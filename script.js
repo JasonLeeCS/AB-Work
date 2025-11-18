@@ -250,6 +250,9 @@ async function handleSubmit(event) {
       mode: "drag",
     });
 
+    console.log('Rendering weekly table with', filteredWeekly.length, 'records');
+    console.log('Rendering drags table with', filteredDrags.length, 'records');
+    
     renderTable(weeklyBody, weeklyEmpty, filteredWeekly, defaultEmptyMessages.weekly);
     renderTable(dragBody, dragEmpty, filteredDrags, defaultEmptyMessages.drags);
     weeklyCount.textContent = filteredWeekly.length;
@@ -283,14 +286,26 @@ function applyFilters(records, filters, options = { mode: "future" }) {
       return false;
     }
 
+    // Ensure datetime is a Date object
+    let recordDate = record.datetime;
+    if (!(recordDate instanceof Date)) {
+      recordDate = new Date(recordDate);
+    }
+    
+    // Skip records with invalid dates (epoch or invalid)
+    if (!recordDate || Number.isNaN(recordDate.getTime()) || recordDate.getTime() === 0) {
+      return false;
+    }
+
     if (options.mode === "future") {
       const end = addDays(now, filters.futureDays);
-      return record.datetime >= startOfDay(now) && record.datetime <= end;
+      const start = startOfDay(now);
+      return recordDate >= start && recordDate <= end;
     }
 
     if (options.mode === "drag") {
       const start = addDays(now, -2);
-      return record.datetime >= start && record.datetime <= now;
+      return recordDate >= start && recordDate <= now;
     }
 
     return true;
@@ -309,18 +324,41 @@ function renderTable(tbody, emptyState, records, fallbackMessage) {
 
   const fragment = document.createDocumentFragment();
   records
-    .sort((a, b) => a.datetime - b.datetime)
+    .sort((a, b) => {
+      // Sort by datetime if available, otherwise put at end
+      const aTime = a.datetime && !Number.isNaN(a.datetime.getTime()) ? a.datetime.getTime() : Infinity;
+      const bTime = b.datetime && !Number.isNaN(b.datetime.getTime()) ? b.datetime.getTime() : Infinity;
+      return aTime - bTime;
+    })
     .forEach((record) => {
       const loadTypeLabel =
         Array.isArray(record.loadTags) && record.loadTags.length
           ? record.loadTags[record.loadTags.length - 1]
           : "—";
+      
+      // Use the actual time from query (prefer displayTime if available, otherwise fallback)
+      const displayTime = record.displayTime || record.pullTime || record.schdHr || "—";
+      const displayDate = record.displayDate || record.pullDate || record.schdDate || null;
+      
+      // Format date if available, otherwise show "—"
+      let formattedDate = "—";
+      if (displayDate) {
+        try {
+          const dateObj = new Date(displayDate);
+          if (!Number.isNaN(dateObj.getTime())) {
+            formattedDate = formatDate(dateObj);
+          }
+        } catch (e) {
+          // Keep as "—"
+        }
+      }
+      
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td>${record.scac}</td>
         <td>${record.shipNum}</td>
-        <td>${formatDate(record.datetime)}</td>
-        <td>${formatTime(record.datetime)}</td>
+        <td>${formattedDate}</td>
+        <td>${displayTime}</td>
         <td>${loadTypeLabel}</td>
         <td>${record.productType}</td>
       `;
@@ -513,36 +551,95 @@ async function loadData(filters) {
   }
 
   const payload = await response.json();
+  
+  // Debug: Log queries to browser console
+  if (payload._debug) {
+    console.group('🔍 Query Debug Information');
+    console.log('Weekly Query:', payload._debug.weeklyQuery);
+    console.log('Drags Query:', payload._debug.dragsQuery);
+    console.log('Parameters:', payload._debug.params);
+    console.groupEnd();
+  }
+  
+  // Debug: Log raw data
+  console.log('Raw weekly data:', payload.weekly?.length || 0, 'records');
+  console.log('Raw drags data:', payload.drags?.length || 0, 'records');
+  if (payload.weekly?.length > 0) {
+    console.log('Sample weekly record:', payload.weekly[0]);
+  }
+  if (payload.drags?.length > 0) {
+    console.log('Sample drags record:', payload.drags[0]);
+  }
+  
   const weekly = (payload.weekly || []).map(normalizeRecord);
   const drags = (payload.drags || []).map(normalizeRecord);
+  
+  // Debug: Log normalized data
+  console.log('Normalized weekly:', weekly.length, 'records');
+  console.log('Normalized drags:', drags.length, 'records');
+  if (weekly.length > 0) {
+    console.log('Sample normalized weekly:', weekly[0]);
+  }
+  if (drags.length > 0) {
+    console.log('Sample normalized drags:', drags[0]);
+  }
+  
   return { weekly, drags };
 }
 
 function normalizeRecord(record) {
-  // Handle VBA query result format: SCAC, ShipNum, PULL_TIME/PULL_DATE or SCHD_HR/SCHD_DATE
-  const datetimeCandidate = record.datetime
-    ? new Date(record.datetime)
-    : deriveDate(record);
-  const datetime = Number.isNaN(datetimeCandidate?.getTime())
-    ? new Date()
-    : datetimeCandidate;
+  // Extract SCAC - server now returns it properly
+  const scac = record.scac || record.SCAC || record.carr_scac || "—";
+  
+  // Extract shipment number
+  const shipNum = record.shipNum || record.ShipNum || record.shipment || 
+                  record.pri_xref_shpmt_id || record.shipmentId || 
+                  record.shipment_id || "—";
+  
+  // Extract date and time fields (server returns pullDate/pullTime)
+  const pullDate = record.pullDate || record.PULL_DATE || record.schdDate || record.SCHD_DATE || null;
+  const pullTime = record.pullTime || record.PULL_TIME || record.schdHr || record.SCHD_HR || null;
+  
+  // Build datetime for sorting (use the one from server if available, otherwise derive)
+  let datetime = null;
+  if (record.datetime) {
+    datetime = new Date(record.datetime);
+    // If parsing failed, try to derive from date/time fields
+    if (Number.isNaN(datetime.getTime())) {
+      datetime = null;
+    }
+  }
+  
+  // If we don't have a valid datetime yet, try to derive from date/time fields
+  if (!datetime || Number.isNaN(datetime.getTime())) {
+    if (pullDate && pullTime) {
+      datetime = deriveDate({ pullDate, pullTime });
+    } else if (record.schdDate && record.schdHr) {
+      datetime = deriveDate({ pullDate: record.schdDate, pullTime: record.schdHr });
+    }
+  }
+  
+  // If datetime is still invalid, use epoch (will be filtered out)
+  if (!datetime || Number.isNaN(datetime.getTime())) {
+    datetime = new Date(0);
+  }
+
+  // Determine which date/time fields to use (PULL for outbound, SCHD for inbound)
+  const displayDate = pullDate || record.schdDate || record.SCHD_DATE || null;
+  const displayTime = pullTime || record.schdHr || record.SCHD_HR || null;
 
   return {
     brewery: record.brewery || record.breweryCode || record.brwy || "",
-    scac: record.SCAC || record.scac || record.carr_scac || "—",
-    shipNum:
-      record.ShipNum ||
-      record.shipNum ||
-      record.shipment ||
-      record.pri_xref_shpmt_id ||
-      record.shipmentId ||
-      record.shipment_id ||
-      "—",
-    // VBA returns PULL_TIME/PULL_DATE or SCHD_HR/SCHD_DATE
-    pullTime: record.PULL_TIME || record.pullTime || null,
-    pullDate: record.PULL_DATE || record.pullDate || null,
-    schdHr: record.SCHD_HR || record.schdHr || null,
-    schdDate: record.SCHD_DATE || record.schdDate || null,
+    scac: scac,
+    shipNum: shipNum,
+    // Keep both sets of fields for flexibility
+    pullTime: pullTime || null,
+    pullDate: pullDate || null,
+    schdHr: record.schdHr || record.SCHD_HR || null,
+    schdDate: record.schdDate || record.SCHD_DATE || null,
+    // Also provide combined display fields
+    displayDate: displayDate,
+    displayTime: displayTime,
     loadTags: Array.isArray(record.loadTags)
       ? record.loadTags
       : filterTruthy([
@@ -557,7 +654,7 @@ function normalizeRecord(record) {
       record.product ||
       record.product_type ||
       "ALL",
-    datetime,
+    datetime: datetime || new Date(0), // Use epoch if no valid date for sorting
   };
 }
 
